@@ -10,26 +10,38 @@ async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } }
+
 async function generateWithRetry(
-  contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
+  contentParts: ContentPart[],
   retryCount = 0
 ): Promise<{ data: string; mimeType: string } | null> {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash-exp-image-generation",
-      contents: contentParts,
+      contents: [
+        {
+          role: "user",
+          parts: contentParts
+        }
+      ],
       config: {
         responseModalities: ["image", "text"],
       },
     })
 
-    const parts = response.candidates?.[0]?.content?.parts
-    if (parts) {
+    // Access the response correctly
+    const candidate = response.candidates?.[0]
+    const parts = candidate?.content?.parts
+    
+    if (parts && Array.isArray(parts)) {
       for (const part of parts) {
-        if (part.inlineData) {
+        // Check for inlineData which contains the generated image
+        const inlineData = (part as { inlineData?: { data: string; mimeType: string } }).inlineData
+        if (inlineData?.data && inlineData?.mimeType) {
           return {
-            data: part.inlineData.data as string,
-            mimeType: part.inlineData.mimeType as string
+            data: inlineData.data,
+            mimeType: inlineData.mimeType
           }
         }
       }
@@ -81,7 +93,7 @@ export async function POST(req: Request) {
          Style: Documentary photography, realistic but not insulting. Casual home clothes.`
 
     // Build content parts - include user photo if provided
-    const contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = []
+    const contentParts: ContentPart[] = []
     
     // Add user photo if provided (base64 data URL)
     if (userPhoto && userPhoto.startsWith("data:")) {
