@@ -1,10 +1,69 @@
 import { GoogleGenAI } from "@google/genai"
+import { put } from "@vercel/blob"
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 
+const MAX_RETRIES = 3
+const RETRY_DELAY_MS = 2000
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function generateWithRetry(
+  contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }>,
+  retryCount = 0
+): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash-exp-image-generation",
+      contents: contentParts,
+      config: {
+        responseModalities: ["image", "text"],
+      },
+    })
+
+    const parts = response.candidates?.[0]?.content?.parts
+    if (parts) {
+      for (const part of parts) {
+        if (part.inlineData) {
+          return {
+            data: part.inlineData.data as string,
+            mimeType: part.inlineData.mimeType as string
+          }
+        }
+      }
+    }
+    
+    // No image in response, retry
+    if (retryCount < MAX_RETRIES) {
+      console.log(`[v0] No image in response, retrying... (attempt ${retryCount + 1}/${MAX_RETRIES})`)
+      await sleep(RETRY_DELAY_MS)
+      return generateWithRetry(contentParts, retryCount + 1)
+    }
+    
+    return null
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const isTimeout = errorMessage.includes("timeout") || 
+                      errorMessage.includes("ETIMEDOUT") || 
+                      errorMessage.includes("ECONNRESET") ||
+                      errorMessage.includes("503") ||
+                      errorMessage.includes("429")
+    
+    if (isTimeout && retryCount < MAX_RETRIES) {
+      console.log(`[v0] Request timeout/rate limit, retrying... (attempt ${retryCount + 1}/${MAX_RETRIES})`)
+      await sleep(RETRY_DELAY_MS * (retryCount + 1)) // Exponential backoff
+      return generateWithRetry(contentParts, retryCount + 1)
+    }
+    
+    throw error
+  }
+}
+
 export async function POST(req: Request) {
   try {
-    const { month, theme, path, goals, workoutStyle, focusAreas, userPhoto } = await req.json()
+    const { month, theme, path, goals, workoutStyle, focusAreas, userPhoto, calendarId } = await req.json()
 
     const goalsText = goals?.join(", ") || "general fitness"
     const focusText = focusAreas?.join(", ") || "full body"
@@ -40,32 +99,36 @@ export async function POST(req: Request) {
     // Add the text prompt
     contentParts.push({ text: prompt })
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-exp-image-generation",
-      contents: contentParts,
-      config: {
-        responseModalities: ["image", "text"],
-      },
-    })
-
-    // Extract image from the response parts
-    const parts = response.candidates?.[0]?.content?.parts
-    if (parts) {
-      for (const part of parts) {
-        if (part.inlineData) {
-          const { data, mimeType } = part.inlineData
-          return Response.json({ 
-            success: true, 
-            imageUrl: `data:${mimeType};base64,${data}` 
-          })
-        }
-      }
+    // Generate image with retry logic
+    const imageResult = await generateWithRetry(contentParts)
+    
+    if (!imageResult) {
+      return Response.json({ 
+        success: false, 
+        error: "No image generated after retries" 
+      }, { status: 500 })
     }
 
+    // Convert base64 to buffer for blob storage
+    const imageBuffer = Buffer.from(imageResult.data, "base64")
+    const extension = imageResult.mimeType.split("/")[1] || "png"
+    
+    // Generate unique filename
+    const timestamp = Date.now()
+    const uniqueId = calendarId || `calendar-${timestamp}`
+    const filename = `futureyou/${uniqueId}/${month.toLowerCase()}-${path}.${extension}`
+    
+    // Upload to Vercel Blob
+    const blob = await put(filename, imageBuffer, {
+      access: "public",
+      contentType: imageResult.mimeType,
+    })
+
     return Response.json({ 
-      success: false, 
-      error: "No image generated" 
-    }, { status: 500 })
+      success: true, 
+      imageUrl: blob.url,
+      blobPath: filename
+    })
   } catch (error) {
     console.error("[v0] Image generation error:", error)
     return Response.json({ 

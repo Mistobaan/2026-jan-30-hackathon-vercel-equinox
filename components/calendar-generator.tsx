@@ -25,7 +25,13 @@ interface MonthImages {
 const CURRENT_YEAR = 2026
 const BATCH_SIZE = 4 // Generate 4 images at a time
 
+// Generate unique calendar ID once per session
+function generateCalendarId() {
+  return `cal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+}
+
 export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
+  const [calendarId] = useState(() => generateCalendarId())
   const [monthImages, setMonthImages] = useState<MonthImages[]>(
     MONTHS_DATA.map(() => ({ 
       gym: null, 
@@ -81,6 +87,7 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
           focusAreas: profile.focusAreas,
           confidenceGoals: profile.confidenceGoals,
           userPhoto: profile.photos?.[0] || null,
+          calendarId,
         }),
       })
       const result = await response.json()
