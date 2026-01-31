@@ -78,6 +78,7 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
           workoutStyle: profile.workoutStyle,
           focusAreas: profile.focusAreas,
           confidenceGoals: profile.confidenceGoals,
+          userPhoto: profile.photos?.[0] || null,
         }),
       })
       const result = await response.json()

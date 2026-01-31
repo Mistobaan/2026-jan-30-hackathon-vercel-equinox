@@ -4,26 +4,45 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 
 export async function POST(req: Request) {
   try {
-    const { month, theme, path, goals, workoutStyle, focusAreas } = await req.json()
+    const { month, theme, path, goals, workoutStyle, focusAreas, userPhoto } = await req.json()
 
     const goalsText = goals?.join(", ") || "general fitness"
     const focusText = focusAreas?.join(", ") || "full body"
     
     const prompt = path === "gym" 
-      ? `Create a cinematic, high-end, realistic photograph of a fit, healthy person at a premium Equinox-style gym. 
-         The person shows visible progress towards ${goalsText} goals, with focus on ${focusText}. 
+      ? `Based on the reference photo of this person, create a cinematic, high-end photograph showing them at a premium Equinox-style gym after achieving their fitness goals. 
+         Keep the person's face and identity recognizable but show them with visible progress towards ${goalsText} goals, with focus on ${focusText}. 
          ${theme} theme - ${getGymDescription(month)}.
          Flattering, premium lighting. The person looks confident, healthy, and motivated.
-         Style: Editorial fitness photography, aspirational, premium aesthetic.`
-      : `Create a cinematic, realistic photograph of a person at home on a couch.
-         The person shows signs of sedentary lifestyle and unhealthy habits.
+         Style: Editorial fitness photography, aspirational, premium aesthetic. Wearing Equinox branded workout clothes.`
+      : `Based on the reference photo of this person, create a cinematic photograph showing them at home on a couch after months of inactivity.
+         Keep the person's face and identity recognizable but show them with signs of sedentary lifestyle.
          ${theme} theme - ${getLazyDescription(month)}.
          Duller, unflattering lighting. The person looks tired and unmotivated.
-         Style: Documentary photography, realistic but not insulting.`
+         Style: Documentary photography, realistic but not insulting. Casual home clothes.`
+
+    // Build content parts - include user photo if provided
+    const contentParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = []
+    
+    // Add user photo if provided (base64 data URL)
+    if (userPhoto && userPhoto.startsWith("data:")) {
+      const matches = userPhoto.match(/^data:(.+);base64,(.+)$/)
+      if (matches) {
+        contentParts.push({
+          inlineData: {
+            mimeType: matches[1],
+            data: matches[2]
+          }
+        })
+      }
+    }
+    
+    // Add the text prompt
+    contentParts.push({ text: prompt })
 
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash-exp-image-generation",
-      contents: prompt,
+      contents: contentParts,
       config: {
         responseModalities: ["image", "text"],
       },
