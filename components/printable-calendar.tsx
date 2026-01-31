@@ -85,21 +85,21 @@ export function PrintableCalendar({
 
       {/* Center Calendar Overlay */}
       <div className="absolute inset-0 flex items-center justify-center">
-        <div className="w-[42%] bg-[#0a1628]/95 backdrop-blur-sm rounded-lg shadow-2xl border border-white/10 overflow-hidden">
+        <div className="w-[42%] bg-black/40 backdrop-blur-md rounded-lg shadow-2xl border border-white/20 overflow-hidden">
           {/* Brand Header */}
-          <div className="text-center py-2 border-b border-white/10">
-            <span className="text-white/90 text-xs tracking-[0.3em] font-light">EQUINOX</span>
+          <div className="text-center py-2 border-b border-white/20">
+            <span className="text-white text-xs tracking-[0.3em] font-light">EQUINOX</span>
           </div>
           
           {/* Month Header */}
-          <div className="bg-white/90 py-2 text-center">
-            <h2 className="text-[#0a1628] font-semibold tracking-wide text-sm">
+          <div className="bg-white/80 py-2 text-center">
+            <h2 className="text-black font-semibold tracking-wide text-sm">
               {monthName.toUpperCase()} {year}
             </h2>
           </div>
           
           {/* Calendar Grid */}
-          <div className="p-3">
+          <div className="p-3 bg-transparent">
             {/* Weekday Headers */}
             <div className="grid grid-cols-7 gap-1 mb-2">
               {weekDays.map((day) => (

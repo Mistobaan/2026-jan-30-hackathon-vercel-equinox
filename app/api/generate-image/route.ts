@@ -1,85 +1,206 @@
-import { generateText } from "ai"
+import { GoogleGenerativeAI } from "@google/generative-ai"
+import { put } from "@vercel/blob"
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "")
+
+const MAX_RETRIES = 3
+const RETRY_DELAY_MS = 2000
+
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+type ImagePart = {
+  inlineData: {
+    mimeType: string
+    data: string
+  }
+}
+
+type TextPart = {
+  text: string
+}
+
+type Part = ImagePart | TextPart
+
+async function generateWithRetry(
+  parts: Part[],
+  retryCount = 0
+): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash-exp-image-generation",
+      generationConfig: {
+        // @ts-expect-error - responseModalities is valid for image generation
+        responseModalities: ["Text", "Image"],
+      },
+    })
+
+    const response = await model.generateContent(parts)
+    const result = response.response
+    const candidates = result.candidates
+
+    if (candidates && candidates.length > 0) {
+      const content = candidates[0].content
+      if (content && content.parts) {
+        for (const part of content.parts) {
+          // @ts-expect-error - inlineData exists on image parts
+          if (part.inlineData) {
+            // @ts-expect-error - inlineData exists on image parts
+            const inlineData = part.inlineData as { data: string; mimeType: string }
+            return {
+              data: inlineData.data,
+              mimeType: inlineData.mimeType,
+            }
+          }
+        }
+      }
+    }
+
+    // No image in response, retry
+    if (retryCount < MAX_RETRIES) {
+      console.log(`[v0] No image in response, retrying... (attempt ${retryCount + 1}/${MAX_RETRIES})`)
+      await sleep(RETRY_DELAY_MS)
+      return generateWithRetry(parts, retryCount + 1)
+    }
+
+    return null
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const isRetryable =
+      errorMessage.includes("timeout") ||
+      errorMessage.includes("ETIMEDOUT") ||
+      errorMessage.includes("ECONNRESET") ||
+      errorMessage.includes("503") ||
+      errorMessage.includes("429") ||
+      errorMessage.includes("overloaded")
+
+    if (isRetryable && retryCount < MAX_RETRIES) {
+      console.log(`[v0] Request failed, retrying... (attempt ${retryCount + 1}/${MAX_RETRIES})`)
+      await sleep(RETRY_DELAY_MS * (retryCount + 1)) // Exponential backoff
+      return generateWithRetry(parts, retryCount + 1)
+    }
+
+    throw error
+  }
+}
 
 export async function POST(req: Request) {
   try {
-    const { month, theme, path, goals, workoutStyle, focusAreas, confidenceGoals } = await req.json()
+    const { month, theme, path, goals, workoutStyle, focusAreas, userPhoto, calendarId } = await req.json()
 
     const goalsText = goals?.join(", ") || "general fitness"
     const focusText = focusAreas?.join(", ") || "full body"
-    
-    const basePrompt = path === "gym" 
-      ? `Create a cinematic, high-end, realistic photograph of a fit, healthy person at a premium Equinox-style gym. 
-         The person shows visible progress towards ${goalsText} goals, with focus on ${focusText}. 
+
+    const prompt =
+      path === "gym"
+        ? `Based on the reference photo of this person, create a cinematic, high-end photograph showing them at a premium Equinox-style gym after achieving their fitness goals. 
+         Keep the person's face and identity recognizable but show them with visible progress towards ${goalsText} goals, with focus on ${focusText}. 
          ${theme} theme - ${getGymDescription(month)}.
          Flattering, premium lighting. The person looks confident, healthy, and motivated.
-         Style: Editorial fitness photography, aspirational, premium aesthetic.`
-      : `Create a cinematic, realistic photograph of a person at home on a couch.
-         The person shows signs of sedentary lifestyle and unhealthy habits.
+         Style: Editorial fitness photography, aspirational, premium aesthetic. Wearing Equinox branded workout clothes.`
+        : `Based on the reference photo of this person, create a cinematic photograph showing them at home on a couch after months of inactivity.
+         Keep the person's face and identity recognizable but show them with signs of sedentary lifestyle.
          ${theme} theme - ${getLazyDescription(month)}.
          Duller, unflattering lighting. The person looks tired and unmotivated.
-         Style: Documentary photography, realistic but not insulting.`
+         Style: Documentary photography, realistic but not insulting. Casual home clothes.`
 
-    const result = await generateText({
-      model: "google/gemini-3-pro-image",
-      prompt: basePrompt,
-    })
+    // Build content parts - include user photo if provided
+    const parts: Part[] = []
 
-    // Extract image from the response
-    const images = result.files?.filter((f) => f.mimeType.startsWith("image/"))
-    
-    if (images && images.length > 0) {
-      const imageData = images[0].base64
-      return Response.json({ 
-        success: true, 
-        imageUrl: `data:${images[0].mimeType};base64,${imageData}` 
-      })
+    // Add user photo if provided (base64 data URL)
+    if (userPhoto && userPhoto.startsWith("data:")) {
+      const matches = userPhoto.match(/^data:(.+);base64,(.+)$/)
+      if (matches) {
+        parts.push({
+          inlineData: {
+            mimeType: matches[1],
+            data: matches[2],
+          },
+        })
+      }
     }
 
-    return Response.json({ 
-      success: false, 
-      error: "No image generated" 
-    }, { status: 500 })
+    // Add the text prompt
+    parts.push({ text: prompt })
+
+    // Generate image with retry logic
+    const imageResult = await generateWithRetry(parts)
+
+    if (!imageResult) {
+      return Response.json(
+        {
+          success: false,
+          error: "No image generated after retries",
+        },
+        { status: 500 }
+      )
+    }
+
+    // Convert base64 to buffer for blob storage
+    const imageBuffer = Buffer.from(imageResult.data, "base64")
+    const extension = imageResult.mimeType.split("/")[1] || "png"
+
+    // Generate unique filename
+    const timestamp = Date.now()
+    const uniqueId = calendarId || `calendar-${timestamp}`
+    const filename = `futureyou/${uniqueId}/${month.toLowerCase()}-${path}.${extension}`
+
+    // Upload to Vercel Blob
+    const blob = await put(filename, imageBuffer, {
+      access: "public",
+      contentType: imageResult.mimeType,
+    })
+
+    return Response.json({
+      success: true,
+      imageUrl: blob.url,
+      blobPath: filename,
+    })
   } catch (error) {
     console.error("[v0] Image generation error:", error)
-    return Response.json({ 
-      success: false, 
-      error: error instanceof Error ? error.message : "Failed to generate image" 
-    }, { status: 500 })
+    return Response.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to generate image",
+      },
+      { status: 500 }
+    )
   }
 }
 
 function getGymDescription(month: string): string {
   const descriptions: Record<string, string> = {
-    "January": "Early progress visible, hopeful expression, starting the fitness journey",
-    "February": "Noticeable tone improvements, tighter core, confident demeanor",
-    "March": "Leaner silhouette, clearer skin, energized spring vibes",
-    "April": "Visible muscle definition, relaxed confidence, consistent progress",
-    "May": "Athletic proportions emerging, open body language, pre-summer readiness",
-    "June": "Strong fit physique, glowing skin, summer energy and social confidence",
-    "July": "Peak conditioning, lean and strong, maximum confidence",
-    "August": "Sustainable fitness, calm strength, balanced lifestyle",
-    "September": "Sharp disciplined appearance, refined body composition",
-    "October": "Defined physique, strong posture, composed confidence",
-    "November": "Healthy grounded appearance, reflecting year-long progress",
-    "December": "Best version achieved, fit confident fulfilled look"
+    January: "Early progress visible, hopeful expression, starting the fitness journey",
+    February: "Noticeable tone improvements, tighter core, confident demeanor",
+    March: "Leaner silhouette, clearer skin, energized spring vibes",
+    April: "Visible muscle definition, relaxed confidence, consistent progress",
+    May: "Athletic proportions emerging, open body language, pre-summer readiness",
+    June: "Strong fit physique, glowing skin, summer energy and social confidence",
+    July: "Peak conditioning, lean and strong, maximum confidence",
+    August: "Sustainable fitness, calm strength, balanced lifestyle",
+    September: "Sharp disciplined appearance, refined body composition",
+    October: "Defined physique, strong posture, composed confidence",
+    November: "Healthy grounded appearance, reflecting year-long progress",
+    December: "Best version achieved, fit confident fulfilled look",
   }
   return descriptions[month] || "Fit and healthy appearance"
 }
 
 function getLazyDescription(month: string): string {
   const descriptions: Record<string, string> = {
-    "January": "Winter couch scene with snacks and TV, slouched posture",
-    "February": "Clothes feeling tighter, lethargic mood, comfort food visible",
-    "March": "Still indoors, heavier appearance, messy environment",
-    "April": "Incremental weight gain visible, passive scrolling on phone",
-    "May": "Self-conscious posture, emotional eating signs",
-    "June": "Sluggish summer look, overheated, unhealthy food choices",
-    "July": "Bloated appearance, zoning out, very low energy",
-    "August": "Inactivity burnout visible, comfort eating",
-    "September": "Heavier and resigned appearance, stuck in habits",
-    "October": "Comfort food season indulgence, dull lighting",
-    "November": "Overindulgence visible, lethargy, mild regret in expression",
-    "December": "Tired and heavier, realization of missed opportunities"
+    January: "Winter couch scene with snacks and TV, slouched posture",
+    February: "Clothes feeling tighter, lethargic mood, comfort food visible",
+    March: "Still indoors, heavier appearance, messy environment",
+    April: "Incremental weight gain visible, passive scrolling on phone",
+    May: "Self-conscious posture, emotional eating signs",
+    June: "Sluggish summer look, overheated, unhealthy food choices",
+    July: "Bloated appearance, zoning out, very low energy",
+    August: "Inactivity burnout visible, comfort eating",
+    September: "Heavier and resigned appearance, stuck in habits",
+    October: "Comfort food season indulgence, dull lighting",
+    November: "Overindulgence visible, lethargy, mild regret in expression",
+    December: "Tired and heavier, realization of missed opportunities",
   }
   return descriptions[month] || "Sedentary lifestyle appearance"
 }
