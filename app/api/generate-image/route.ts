@@ -1,13 +1,15 @@
-import { generateText } from "ai"
+import { GoogleGenAI } from "@google/genai"
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 
 export async function POST(req: Request) {
   try {
-    const { month, theme, path, goals, workoutStyle, focusAreas, confidenceGoals } = await req.json()
+    const { month, theme, path, goals, workoutStyle, focusAreas } = await req.json()
 
     const goalsText = goals?.join(", ") || "general fitness"
     const focusText = focusAreas?.join(", ") || "full body"
     
-    const basePrompt = path === "gym" 
+    const prompt = path === "gym" 
       ? `Create a cinematic, high-end, realistic photograph of a fit, healthy person at a premium Equinox-style gym. 
          The person shows visible progress towards ${goalsText} goals, with focus on ${focusText}. 
          ${theme} theme - ${getGymDescription(month)}.
@@ -19,20 +21,26 @@ export async function POST(req: Request) {
          Duller, unflattering lighting. The person looks tired and unmotivated.
          Style: Documentary photography, realistic but not insulting.`
 
-    const result = await generateText({
-      model: "google/gemini-3-pro-image",
-      prompt: basePrompt,
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash-exp-image-generation",
+      contents: prompt,
+      config: {
+        responseModalities: ["image", "text"],
+      },
     })
 
-    // Extract image from the response
-    const images = result.files?.filter((f) => f.mimeType.startsWith("image/"))
-    
-    if (images && images.length > 0) {
-      const imageData = images[0].base64
-      return Response.json({ 
-        success: true, 
-        imageUrl: `data:${images[0].mimeType};base64,${imageData}` 
-      })
+    // Extract image from the response parts
+    const parts = response.candidates?.[0]?.content?.parts
+    if (parts) {
+      for (const part of parts) {
+        if (part.inlineData) {
+          const { data, mimeType } = part.inlineData
+          return Response.json({ 
+            success: true, 
+            imageUrl: `data:${mimeType};base64,${data}` 
+          })
+        }
+      }
     }
 
     return Response.json({ 
