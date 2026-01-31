@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef } from "react"
-import { Loader2, Printer, Sparkles, ChevronLeft, ChevronRight, Play, Check } from "lucide-react"
+import { Loader2, Printer, Sparkles, ChevronLeft, ChevronRight, Play, Check, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { PrintableCalendar } from "./printable-calendar"
 import { MONTHS_DATA, type UserProfile } from "@/lib/store"
@@ -23,6 +23,7 @@ interface MonthImages {
 }
 
 const CURRENT_YEAR = 2026
+const BATCH_SIZE = 4 // Generate 4 images at a time
 
 export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
   const [monthImages, setMonthImages] = useState<MonthImages[]>(
@@ -37,6 +38,7 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
   )
   const [currentPreviewMonth, setCurrentPreviewMonth] = useState(0)
   const [isGeneratingAll, setIsGeneratingAll] = useState(false)
+  const [showFullscreenCalendar, setShowFullscreenCalendar] = useState(false)
   const calendarRefs = useRef<(HTMLDivElement | null)[]>([])
 
   const generateImageForMonth = async (
@@ -118,14 +120,25 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
   const generateAllImages = async () => {
     setIsGeneratingAll(true)
     
-    // Generate all images in parallel - each month generates both gym and lazy simultaneously
-    const allPromises = MONTHS_DATA.flatMap((_, idx) => [
-      generateImageForMonth(idx, "gym"),
-      generateImageForMonth(idx, "lazy")
-    ])
+    // Create array of all image generation tasks: [{monthIndex, path}, ...]
+    const allTasks: { monthIndex: number; path: "gym" | "lazy" }[] = []
+    for (let idx = 0; idx < MONTHS_DATA.length; idx++) {
+      allTasks.push({ monthIndex: idx, path: "gym" })
+      allTasks.push({ monthIndex: idx, path: "lazy" })
+    }
     
-    await Promise.all(allPromises)
+    // Process in batches of BATCH_SIZE
+    for (let i = 0; i < allTasks.length; i += BATCH_SIZE) {
+      const batch = allTasks.slice(i, i + BATCH_SIZE)
+      const batchPromises = batch.map(task => 
+        generateImageForMonth(task.monthIndex, task.path)
+      )
+      await Promise.all(batchPromises)
+    }
+    
     setIsGeneratingAll(false)
+    // Show fullscreen calendar when complete
+    setShowFullscreenCalendar(true)
   }
 
   const handlePrint = () => {
@@ -138,6 +151,126 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
 
   const completedCount = monthImages.filter(m => m.gym && m.lazy).length
   const totalProgress = Math.round((completedCount / 12) * 100)
+
+  // Fullscreen Calendar View
+  if (showFullscreenCalendar && allImagesGenerated) {
+    return (
+      <div className="min-h-screen bg-background">
+        {/* Floating Controls */}
+        <div className="fixed top-4 left-4 right-4 z-20 flex items-center justify-between print:hidden">
+          <Button
+            variant="outline"
+            onClick={() => setShowFullscreenCalendar(false)}
+            className="gap-2 bg-background/80 backdrop-blur-lg"
+          >
+            <X className="w-4 h-4" />
+            Exit Fullscreen
+          </Button>
+          
+          <div className="flex items-center gap-2 bg-background/80 backdrop-blur-lg rounded-lg p-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setCurrentPreviewMonth(prev => Math.max(0, prev - 1))}
+              disabled={currentPreviewMonth === 0}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+            <span className="font-medium min-w-[140px] text-center text-sm">
+              {MONTHS_DATA[currentPreviewMonth]?.month} {CURRENT_YEAR}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setCurrentPreviewMonth(prev => Math.min(11, prev + 1))}
+              disabled={currentPreviewMonth === 11}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </Button>
+          </div>
+
+          <Button onClick={handlePrint} className="gap-2">
+            <Printer className="w-4 h-4" />
+            Print Calendar
+          </Button>
+        </div>
+
+        {/* Fullscreen Calendar */}
+        <div className="w-full h-screen flex items-center justify-center p-8 pt-20 print:p-0 print:pt-0">
+          <div className="w-full max-w-[1600px] aspect-video">
+            <PrintableCalendar
+              month={currentPreviewMonth}
+              year={CURRENT_YEAR}
+              gymImage={monthImages[currentPreviewMonth]?.gym}
+              lazyImage={monthImages[currentPreviewMonth]?.lazy}
+              monthName={MONTHS_DATA[currentPreviewMonth].month}
+              theme={MONTHS_DATA[currentPreviewMonth].theme}
+            />
+          </div>
+        </div>
+
+        {/* Month Thumbnails */}
+        <div className="fixed bottom-4 left-4 right-4 z-20 print:hidden">
+          <div className="flex gap-2 justify-center overflow-x-auto p-2 bg-background/80 backdrop-blur-lg rounded-xl">
+            {MONTHS_DATA.map((data, idx) => (
+              <button
+                key={data.month}
+                onClick={() => setCurrentPreviewMonth(idx)}
+                className={cn(
+                  "flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium transition-all",
+                  currentPreviewMonth === idx 
+                    ? "bg-primary text-primary-foreground" 
+                    : "bg-secondary hover:bg-secondary/80 text-secondary-foreground"
+                )}
+              >
+                {data.month.slice(0, 3)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Print Layout */}
+        <div className="hidden print:block">
+          {MONTHS_DATA.map((data, idx) => (
+            <div 
+              key={data.month}
+              ref={el => { calendarRefs.current[idx] = el }}
+              className="break-after-page"
+            >
+              <PrintableCalendar
+                month={idx}
+                year={CURRENT_YEAR}
+                gymImage={monthImages[idx]?.gym}
+                lazyImage={monthImages[idx]?.lazy}
+                monthName={data.month}
+                theme={data.theme}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Print Styles */}
+        <style jsx global>{`
+          @media print {
+            @page {
+              size: landscape;
+              margin: 0;
+            }
+            body {
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .print\\:hidden {
+              display: none !important;
+            }
+            .print\\:block {
+              display: block !important;
+            }
+          }
+        `}</style>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -157,11 +290,20 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
           </div>
           
           <div className="flex items-center gap-2">
-            {anyImagesGenerated && (
-              <Button variant="outline" onClick={handlePrint} className="gap-2 bg-transparent">
-                <Printer className="w-4 h-4" />
-                Print Calendar
-              </Button>
+            {allImagesGenerated && (
+              <>
+                <Button 
+                  variant="outline" 
+                  onClick={() => setShowFullscreenCalendar(true)} 
+                  className="gap-2 bg-transparent"
+                >
+                  View Fullscreen
+                </Button>
+                <Button variant="outline" onClick={handlePrint} className="gap-2 bg-transparent">
+                  <Printer className="w-4 h-4" />
+                  Print Calendar
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -170,7 +312,7 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
       <main className="max-w-7xl mx-auto px-4 py-6 print:p-0 print:max-w-none">
         {/* Centered Generate Button - Only shown before generation starts */}
         {!anyImagesGenerated && !isGeneratingAll && (
-          <div className="flex flex-col items-center justify-center min-h-[60vh] print:hidden">
+          <div className="flex flex-col items-center justify-center min-h-[70vh] print:hidden">
             <div className="text-center max-w-lg">
               <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-6">
                 <Sparkles className="w-10 h-10 text-primary" />
@@ -190,14 +332,14 @@ export function CalendarGenerator({ profile, onBack }: CalendarGeneratorProps) {
                 Generate All Months
               </Button>
               <p className="text-sm text-muted-foreground mt-4">
-                All images will be generated in parallel
+                Generates {BATCH_SIZE} images at a time
               </p>
             </div>
           </div>
         )}
 
         {/* Progress Grid - Show during and after generation */}
-        {(isGeneratingAll || anyImagesGenerated) && (
+        {(isGeneratingAll || anyImagesGenerated) && !showFullscreenCalendar && (
           <div className="print:hidden">
             {/* Overall Progress Header */}
             {isAnyGenerating && (
